@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Lista — Casa Wullyann e Pamela</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div class="container">
+      <h1>Lista — Casa Wullyann e Pamela</h1>
+      <p class="sub">Item • Prioridade (1–10) • Pendente/Realizado • Grupos • Valor</p>
+
+      <!-- Formulário -->
+      <form id="form-add" class="row">
+        <input id="inp-texto" class="input" placeholder="Novo item…" autocomplete="off" />
+        <select id="inp-grupo" class="input small"></select>
+        <input id="inp-prio" class="input prio" type="number" min="1" max="10" value="5" />
+        <input id="inp-valor" class="input small" type="number" min="0" step="0.01" placeholder="Valor (R$)" style="width:120px" />
+        <button class="btn">Adicionar</button>
+      </form>
+
+      <!-- Toolbar / Filtros -->
+      <div class="toolbar">
+        <label>Filtro:
+          <select id="sel-filtro" class="input small">
+            <option value="todos">Todos</option>
+            <option value="pendentes">Pendentes</option>
+            <option value="realizados">Realizados</option>
+          </select>
+        </label>
+
+        <label>Grupo:
+          <select id="sel-grupo" class="input small">
+            <option value="">Todos</option>
+          </select>
+        </label>
+
+        <!-- Filtro por prioridade -->
+        <label>Prioridade:
+          <select id="prio-op" class="input small" title="Operador">
+            <option value="gte">≥</option>
+            <option value="lte">≤</option>
+            <option value="eq">=</option>
+          </select>
+        </label>
+        <input id="prio-val" type="number" min="1" max="10" placeholder="1–10" class="input small" style="width:72px" />
+        <button id="btn-prio-clear" class="btn ghost" title="Limpar filtro de prioridade">×</button>
+
+        <div class="spacer"></div>
+
+        <!-- Modo deletar -->
+        <button id="btn-del-mode" class="btn ghost">Deletar itens</button>
+        <button id="btn-del-cancel" class="btn ghost" style="display:none">Cancelar</button>
+        <button id="btn-del-confirm" class="btn danger" style="display:none">Apagar selecionados (0)</button>
+
+        <button id="btn-grupo" class="btn ghost">Criar grupo</button>
+        <button id="btn-limpar" class="btn ghost">Limpar realizados</button>
+      </div>
+
+      <!-- Contadores -->
+      <div id="contadores" class="stats">0 itens • 0 pendentes • 0 realizados • Total R$ 0,00 • Falta R$ 0,00</div>
+
+      <!-- Faixa de erro -->
+      <div id="error" class="error" style="display:none"></div>
+
+      <!-- Lista -->
+      <table class="tabela" id="lista">
+        <thead>
+          <tr>
+            <th>OK</th>
+            <th>Prioridade</th>
+            <th>Grupo</th>
+            <th>Valor</th>
+            <th>Item</th>
+          </tr>
+        </thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

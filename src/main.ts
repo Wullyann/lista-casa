@@ -1,316 +1,358 @@
-import { db, ensureAnon } from "./firebase";
-import {
-  addDoc, collection, deleteDoc, doc, getDoc, onSnapshot, orderBy, query,
-  serverTimestamp, setDoc, updateDoc
-} from "firebase/firestore";
-
+/* ---------- Tipos ---------- */
 type Item = {
   id: string;
-  texto: string;
-  prioridade: number; // 1–10
+  item: string;
+  prio: number;
   grupo: string;
-  valor: number;      // R$
+  valor: number;      // em reais, ponto como separador
+  link?: string;      // NOVO
   feito: boolean;
-  criadoEm?: any;
+  createdAt: number;
 };
 
-const form = document.getElementById("form-add") as HTMLFormElement;
-const inpTexto = document.getElementById("inp-texto") as HTMLInputElement;
-const inpPrio = document.getElementById("inp-prio") as HTMLInputElement;
-const inpGrupo = document.getElementById("inp-grupo") as HTMLSelectElement;
-const inpValor = document.getElementById("inp-valor") as HTMLInputElement;
+/* ---------- Estado ---------- */
+let items: Item[] = [];
+let grupos: string[] = ["Cozinha", "Quarto", "Sala", "Banheiro", "Serviços"];
 
-const filtroSel = document.getElementById("sel-filtro") as HTMLSelectElement;
-const filtroGrupo = document.getElementById("sel-grupo") as HTMLSelectElement;
+/* ---------- DOM ---------- */
+const elNovoItem = document.getElementById("novoItem") as HTMLInputElement;
+const elNovoGrupo = document.getElementById("novoGrupo") as HTMLSelectElement;
+const elNovaPrio = document.getElementById("novaPrio") as HTMLInputElement;
+const elNovoValor = document.getElementById("novoValor") as HTMLInputElement;
+const elNovoLink  = document.getElementById("novoLink")  as HTMLInputElement; // NOVO
+const btnAdd      = document.getElementById("btnAdd") as HTMLButtonElement;
 
-const prioOp = document.getElementById("prio-op") as HTMLSelectElement | null;
-const prioVal = document.getElementById("prio-val") as HTMLInputElement | null;
-const btnPrioClear = document.getElementById("btn-prio-clear") as HTMLButtonElement | null;
+const selFiltroEstado = document.getElementById("filtroEstado") as HTMLSelectElement;
+const selFiltroGrupo  = document.getElementById("filtroGrupo") as HTMLSelectElement;
+const selCmpPrio      = document.getElementById("cmpPrio") as HTMLSelectElement;
+const inpFiltroPrio   = document.getElementById("filtroPrio") as HTMLInputElement;
+const btnLimpaPrio    = document.getElementById("btnLimpaPrio") as HTMLButtonElement;
+const inpBusca        = document.getElementById("filtroBusca") as HTMLInputElement; // NOVO
 
-const table = document.getElementById("lista") as HTMLTableElement;
-const theadRow = table.querySelector("thead tr") as HTMLTableRowElement;
-const tbody = document.getElementById("tbody") as HTMLTableSectionElement;
+const btnCriarGrupo = document.getElementById("btnCriarGrupo") as HTMLButtonElement;
+const btnLimpar     = document.getElementById("btnLimpar") as HTMLButtonElement;
+const btnDeletar    = document.getElementById("btnDeletar") as HTMLButtonElement;
 
-const contadores = document.getElementById("contadores") as HTMLDivElement;
-const btnLimpar = document.getElementById("btn-limpar") as HTMLButtonElement;
-const btnGrupo = document.getElementById("btn-grupo") as HTMLButtonElement;
+const ulLista = document.getElementById("lista") as HTMLUListElement;
+const elResumo = document.getElementById("resumo") as HTMLDivElement;
 
-const btnDelMode = document.getElementById("btn-del-mode") as HTMLButtonElement;
-const btnDelCancel = document.getElementById("btn-del-cancel") as HTMLButtonElement;
-const btnDelConfirm = document.getElementById("btn-del-confirm") as HTMLButtonElement;
+/* ---------- Helpers ---------- */
+const money = (n: number) =>
+  (isFinite(n) ? n : 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 
-const errorBox = document.getElementById("error") as HTMLDivElement | null;
-
-let lista: Item[] = [];
-let grupos: string[] = [];
-let deleteMode = false;
-const selectedToDelete = new Set<string>();
-
-// sala via URL (?room=...), ou padrão:
-const url = new URL(window.location.href);
-const roomId = (url.searchParams.get("room") || "wullyann-pamela").trim();
-
-// refs
-const colItems = collection(db, "rooms", roomId, "items");
-const docMeta  = doc(db, "rooms", roomId, "meta", "groups");
-
-// ---------- helpers ----------
-function showError(msg: string | null) {
-  if (!errorBox) { if (msg) console.error(msg); return; }
-  if (!msg) { errorBox.style.display = "none"; errorBox.textContent = ""; return; }
-  errorBox.style.display = ""; errorBox.textContent = msg;
+function normalizaGrupo(s: string) {
+  return (s || "").trim();
 }
-function clampPrio(n: number) { return Math.max(1, Math.min(10, Number(n || 5))); }
-function fmtBRL(n: number) { return n.toLocaleString("pt-BR", { style: "currency", currency: "BRL" }); }
-function refillSelectOptions(sel: HTMLSelectElement, opts: string[], addTodos = false) {
-  sel.innerHTML = "";
-  if (addTodos) { const o = document.createElement("option"); o.value = ""; o.textContent = "Todos"; sel.appendChild(o); }
-  for (const g of opts) { const o = document.createElement("option"); o.value = g; o.textContent = g; sel.appendChild(o); }
-}
-function syncGroupSelects() {
-  refillSelectOptions(inpGrupo, grupos, false);
-  refillSelectOptions(filtroGrupo, grupos, true);
-}
-function ensureDeleteHeader() {
-  const exists = theadRow.querySelector("#th-select");
-  if (deleteMode && !exists) {
-    const th = document.createElement("th"); th.id = "th-select"; th.textContent = "Sel.";
-    theadRow.insertBefore(th, theadRow.firstChild);
-  } else if (!deleteMode && exists) {
-    exists.remove();
-  }
-}
-function applyFilters(base: Item[]) {
-  let data = [...base];
-  if (filtroSel.value === "pendentes") data = data.filter(i => !i.feito);
-  if (filtroSel.value === "realizados") data = data.filter(i => i.feito);
-  if (filtroGrupo.value) data = data.filter(i => i.grupo === filtroGrupo.value);
-  if (prioVal && prioOp && prioVal.value.trim() !== "") {
-    const val = clampPrio(Number(prioVal.value));
-    if (!Number.isNaN(val)) {
-      data = data.filter(i => prioOp.value === "gte" ? i.prioridade >= val
-        : prioOp.value === "lte" ? i.prioridade <= val
-        : i.prioridade === val);
-    }
-  }
-  return data;
+function cmpGrupo(a: string, b: string) {
+  return a.localeCompare(b, "pt-BR", { sensitivity: "base" });
 }
 
-// ---------- render ----------
+/* ---------- Render ---------- */
+function renderGrupos() {
+  const opts = grupos.map(g => `<option value="${g}">${g}</option>`).join("");
+  elNovoGrupo.innerHTML = opts;
+  selFiltroGrupo.innerHTML = `<option value="todos">Todos</option>` + opts;
+}
+
+function renderResumo(exibidos: Item[]) {
+  const pend = exibidos.filter(i => !i.feito);
+  const real = exibidos.filter(i => i.feito);
+  const total = exibidos.reduce((s, i) => s + (i.valor || 0), 0);
+  const falta = pend.reduce((s, i) => s + (i.valor || 0), 0);
+
+  elResumo.innerHTML =
+    `${exibidos.length} itens • ${pend.length} pendentes • ${real.length} realizados ` +
+    `• Total ${money(total)} • Falta ${money(falta)}`;
+}
+
 function render() {
-  syncGroupSelects();
-  ensureDeleteHeader();
+  // filtros
+  const estado = selFiltroEstado.value; // todos | pendentes | realizados
+  const grupoFiltro = normalizaGrupo(selFiltroGrupo.value);
+  const cmp = selCmpPrio.value as ">=" | "<=" | "=";
+  const prioV = Number(inpFiltroPrio.value) || undefined;
+  const busca = (inpBusca.value || "").toLowerCase().trim();
 
-  btnDelMode.style.display = deleteMode ? "none" : "";
-  btnDelCancel.style.display = deleteMode ? "" : "none";
-  btnDelConfirm.style.display = deleteMode ? "" : "none";
-  btnDelConfirm.textContent = `Apagar selecionados (${selectedToDelete.size})`;
+  let exibidos = items.slice();
 
-  let data = applyFilters(lista);
-  data.sort((a, b) =>
-    Number(a.feito) - Number(b.feito) ||
-    b.prioridade - a.prioridade ||
-    a.grupo.localeCompare(b.grupo)
-  );
+  // Filtro estado
+  if (estado === "pendentes") exibidos = exibidos.filter(i => !i.feito);
+  if (estado === "realizados") exibidos = exibidos.filter(i => i.feito);
 
-  const pend = data.filter(i => !i.feito).length;
-  const real = data.length - pend;
-  const totalValor = data.reduce((s, i) => s + (i.valor || 0), 0);
-  const totalPend = data.filter(i => !i.feito).reduce((s, i) => s + (i.valor || 0), 0);
-  contadores.textContent = `${data.length} itens • ${pend} pendentes • ${real} realizados • Total ${fmtBRL(totalValor)} • Falta ${fmtBRL(totalPend)}`;
-
-  tbody.innerHTML = "";
-  if (data.length === 0) {
-    const tr = document.createElement("tr");
-    const td = document.createElement("td");
-    const colCount = deleteMode ? 6 : 5;
-    td.colSpan = colCount; td.className = "empty";
-    td.textContent = "Nada por aqui ainda.";
-    tr.appendChild(td); tbody.appendChild(tr);
-    return;
+  // Filtro grupo (CORRIGIDO: case-insensitive e “Todos” não filtra)
+  if (grupoFiltro && grupoFiltro.toLowerCase() !== "todos") {
+    exibidos = exibidos.filter(
+      i => normalizaGrupo(i.grupo).toLowerCase() === grupoFiltro.toLowerCase()
+    );
   }
 
-  for (const i of data) {
-    const tr = document.createElement("tr");
-    if (deleteMode && selectedToDelete.has(i.id)) tr.classList.add("tr-del-selected");
-
-    if (deleteMode) {
-      const tdSel = document.createElement("td");
-      tdSel.className = "center";
-      const cbSel = document.createElement("input");
-      cbSel.type = "checkbox"; cbSel.checked = selectedToDelete.has(i.id);
-      cbSel.addEventListener("change", () => {
-        if (cbSel.checked) selectedToDelete.add(i.id); else selectedToDelete.delete(i.id);
-        btnDelConfirm.textContent = `Apagar selecionados (${selectedToDelete.size})`;
-        tr.classList.toggle("tr-del-selected", cbSel.checked);
-      });
-      tdSel.appendChild(cbSel); tr.appendChild(tdSel);
-    }
-
-    // OK
-    const tdOk = document.createElement("td");
-    tdOk.className = "center";
-    const cb = document.createElement("input");
-    cb.type = "checkbox"; cb.checked = i.feito; cb.disabled = deleteMode;
-    cb.addEventListener("change", async () => {
-      try { await updateDoc(doc(db, "rooms", roomId, "items", i.id), { feito: cb.checked }); }
-      catch (e:any) { console.error(e); showError("Falha ao atualizar item (feito)."); }
-    });
-    tdOk.appendChild(cb); tr.appendChild(tdOk);
-
-    // Prioridade
-    const tdPrio = document.createElement("td");
-    const prio = document.createElement("input");
-    prio.type = "number"; prio.min = "1"; prio.max = "10";
-    prio.value = String(i.prioridade);
-    prio.className = "input prio"; prio.disabled = deleteMode;
-    prio.addEventListener("change", async () => {
-      const v = clampPrio(Number(prio.value)); prio.value = String(v);
-      try { await updateDoc(doc(db, "rooms", roomId, "items", i.id), { prioridade: v }); }
-      catch (e:any) { console.error(e); showError("Falha ao atualizar prioridade."); }
-    });
-    tdPrio.appendChild(prio); tr.appendChild(tdPrio);
-
-    // Grupo
-    const tdGrupo = document.createElement("td");
-    const sel = document.createElement("select");
-    sel.className = "input small";
-    for (const g of grupos) { const o = document.createElement("option"); o.value = g; o.textContent = g; if (g===i.grupo) o.selected = true; sel.appendChild(o); }
-    sel.disabled = deleteMode;
-    sel.addEventListener("change", async () => {
-      try { await updateDoc(doc(db, "rooms", roomId, "items", i.id), { grupo: sel.value }); }
-      catch (e:any) { console.error(e); showError("Falha ao atualizar grupo."); }
-    });
-    tdGrupo.appendChild(sel); tr.appendChild(tdGrupo);
-
-    // Valor
-    const tdValor = document.createElement("td");
-    const valInput = document.createElement("input");
-    valInput.type = "number"; valInput.min = "0"; valInput.step = "0.01";
-    valInput.value = i.valor ? String(i.valor) : ""; valInput.placeholder = "0,00";
-    valInput.className = "input small"; valInput.disabled = deleteMode;
-    const valFmt = document.createElement("div"); valFmt.className = "muted";
-    valFmt.textContent = i.valor ? fmtBRL(i.valor) : "—";
-    valInput.addEventListener("change", async () => {
-      const n = Number(valInput.value); const novo = Number.isFinite(n) && n >= 0 ? n : 0;
-      valInput.value = novo ? String(novo) : "";
-      try { await updateDoc(doc(db, "rooms", roomId, "items", i.id), { valor: novo }); }
-      catch (e:any) { console.error(e); showError("Falha ao atualizar valor."); }
-    });
-    tdValor.appendChild(valInput); tdValor.appendChild(valFmt); tr.appendChild(tdValor);
-
-    // Texto
-    const tdTexto = document.createElement("td");
-    const txt = document.createElement("input");
-    txt.className = "item-text" + (i.feito ? " strike" : "");
-    txt.value = i.texto; txt.disabled = deleteMode;
-    txt.addEventListener("blur", async () => {
-      try { await updateDoc(doc(db, "rooms", roomId, "items", i.id), { texto: txt.value.trim() }); }
-      catch (e:any) { console.error(e); showError("Falha ao atualizar texto."); }
-    });
-    tdTexto.appendChild(txt); tr.appendChild(tdTexto);
-
-    tbody.appendChild(tr);
+  // Filtro prioridade
+  if (prioV && prioV >= 1 && prioV <= 10) {
+    exibidos = exibidos.filter(i =>
+      cmp === ">=" ? i.prio >= prioV :
+      cmp === "<=" ? i.prio <= prioV : i.prio === prioV
+    );
   }
+
+  // Filtro de busca (item + link)
+  if (busca) {
+    exibidos = exibidos.filter(i =>
+      i.item.toLowerCase().includes(busca) ||
+      (i.link || "").toLowerCase().includes(busca)
+    );
+  }
+
+  // Ordena: pendentes primeiro, depois prio desc, depois alfabético
+  exibidos.sort((a, b) => (Number(a.feito) - Number(b.feito)) || (b.prio - a.prio) || cmpGrupo(a.item, b.item));
+
+  // Render
+  ulLista.innerHTML = exibidos.map(i => row(i)).join("");
+  renderResumo(exibidos);
 }
 
-// ---------- ops Firestore ----------
-async function addItem(texto: string, prioridade: number, grupo: string, valor: number) {
-  await addDoc(colItems, { texto, prioridade, grupo, valor, feito:false, criadoEm: serverTimestamp() });
+function row(i: Item) {
+  const linkHtml = i.link ? `<a class="chip link" href="${i.link}" target="_blank" rel="noopener">🔗 link</a>` : "";
+  return `
+<li class="tr ${i.feito ? "done" : ""}" data-id="${i.id}">
+  <div class="td center">
+    <input type="checkbox" ${i.feito ? "checked" : ""} data-action="toggle" />
+  </div>
+  <div class="td">
+    <input class="pill prio" type="number" min="1" max="10" value="${i.prio}" data-action="edit-prio" />
+  </div>
+  <div class="td">
+    <div class="select slim">
+      <select data-action="edit-grupo">
+        ${grupos.map(g => `<option ${g===i.grupo?"selected":""}>${g}</option>`).join("")}
+      </select>
+    </div>
+  </div>
+  <div class="td">
+    <input class="input slim" value="${(i.valor||0).toLocaleString("pt-BR",{minimumFractionDigits:2, maximumFractionDigits:2})}" data-action="edit-valor" />
+  </div>
+  <div class="td">
+    <div class="row gap">
+      <input class="input flex" value="${i.item.replace(/"/g,'&quot;')}" data-action="edit-item" />
+      <input class="input flex" placeholder="link" value="${i.link ?? ""}" data-action="edit-link" />
+      ${linkHtml}
+    </div>
+  </div>
+</li>`;
 }
-async function deleteItems(ids: string[]) {
-  await Promise.all(ids.map(id => deleteDoc(doc(db, "rooms", roomId, "items", id))));
-}
-async function createGroupsIfMissing() {
-  const snap = await getDoc(docMeta);
-  if (!snap.exists()) {
-    const defaults = ["Cozinha","Sala","Quarto","Banheiro","Lavanderia","Escritório","Varanda","Outros"];
-    await setDoc(docMeta, { groups: defaults }, { merge: true });
-    grupos = defaults.slice();
+
+/* ---------- Eventos UI ---------- */
+btnAdd.addEventListener("click", () => {
+  const txt = (elNovoItem.value || "").trim();
+  const prio = Math.max(1, Math.min(10, Number(elNovaPrio.value || 5)));
+  const grupo = normalizaGrupo(elNovoGrupo.value || "Outros");
+  const valor = parseMoney(elNovoValor.value);
+  const link = (elNovoLink.value || "").trim();
+
+  if (!txt) return;
+
+  const it: Item = {
+    id: crypto.randomUUID(),
+    item: txt,
+    prio,
+    grupo,
+    valor,
+    link: link || undefined,
+    feito: false,
+    createdAt: Date.now()
+  };
+  items.push(it);
+  elNovoItem.value = "";
+  elNovoValor.value = "";
+  elNovoLink.value = "";
+  render();
+  persistAdd(it).catch(console.error);
+});
+
+btnCriarGrupo.addEventListener("click", () => {
+  const nome = prompt("Nome do novo grupo?");
+  const g = normalizaGrupo(nome || "");
+  if (!g) return;
+  if (!grupos.map(s=>s.toLowerCase()).includes(g.toLowerCase())) {
+    grupos.push(g);
+    grupos.sort(cmpGrupo);
+    persistGrupos().catch(console.error);
   } else {
-    const data = snap.data() as { groups?: string[] } | undefined;
-    grupos = data?.groups && Array.isArray(data.groups) ? data.groups : [];
-    if (grupos.length === 0) {
-      const defaults = ["Cozinha","Sala","Quarto","Banheiro","Lavanderia","Escritório","Varanda","Outros"];
-      await setDoc(docMeta, { groups: defaults }, { merge: true });
-      grupos = defaults.slice();
-    }
+    alert("Esse grupo já existe.");
   }
-}
-function subscribe() {
-  onSnapshot(docMeta, (snap) => {
-    const data = snap.data() as { groups?: string[] } | undefined;
-    if (data?.groups && Array.isArray(data.groups)) grupos = data.groups;
-    render();
-  }, (err) => { console.error(err); showError("Erro de leitura dos grupos (permissão?)"); });
-
-  const q = query(colItems, orderBy("criadoEm", "desc"));
-  onSnapshot(q, (snap) => {
-    lista = snap.docs.map(d => ({ id: d.id, ...(d.data() as Omit<Item,"id">) }));
-    showError(null);
-    render();
-  }, (err) => { console.error(err); showError("Erro de leitura dos itens (permissão?)"); });
-}
-
-// ---------- eventos ----------
-form.addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const texto = inpTexto.value.trim(); if (!texto) return;
-  const prioridade = clampPrio(Number(inpPrio.value));
-  const grupo = inpGrupo.value || (grupos[0] ?? "Geral");
-  const n = Number(inpValor.value); const valor = Number.isFinite(n) && n >= 0 ? n : 0;
-
-  try { await addItem(texto, prioridade, grupo, valor); inpTexto.value = ""; inpPrio.value = "5"; inpValor.value = ""; }
-  catch (err:any) { console.error(err); showError("Falha ao adicionar item."); }
+  renderGrupos();
 });
 
-filtroSel.addEventListener("change", render);
-filtroGrupo.addEventListener("change", render);
+btnLimpaPrio.addEventListener("click", ()=>{ inpFiltroPrio.value=""; render(); });
 
-if (prioOp && prioVal && btnPrioClear) {
-  prioOp.addEventListener("change", render);
-  prioVal.addEventListener("input", () => {
-    const n = Number(prioVal.value); if (!Number.isNaN(n)) prioVal.value = String(clampPrio(n));
-    render();
+[selFiltroEstado, selFiltroGrupo, selCmpPrio, inpFiltroPrio, inpBusca].forEach(el =>
+  el.addEventListener("input", render)
+);
+
+ulLista.addEventListener("input", (e) => {
+  const t = e.target as HTMLElement;
+  const li = (t.closest("li") as HTMLLIElement);
+  if (!li) return;
+  const id = li.dataset.id!;
+  const it = items.find(x => x.id === id);
+  if (!it) return;
+
+  const action = t.getAttribute("data-action");
+  if (action === "edit-prio") {
+    const v = clamp(+((t as HTMLInputElement).value || 5), 1, 10);
+    it.prio = v;
+    persistUpdate(id, { prio: v }).catch(console.error);
+  } else if (action === "edit-grupo") {
+    const g = normalizaGrupo((t as HTMLSelectElement).value);
+    it.grupo = g;
+    persistUpdate(id, { grupo: g }).catch(console.error);
+  } else if (action === "edit-valor") {
+    const v = parseMoney((t as HTMLInputElement).value);
+    it.valor = v;
+    (t as HTMLInputElement).value = formatMoney(v);
+    persistUpdate(id, { valor: v }).catch(console.error);
+  } else if (action === "edit-item") {
+    const v = ((t as HTMLInputElement).value || "").trim();
+    it.item = v;
+    persistUpdate(id, { item: v }).catch(console.error);
+  } else if (action === "edit-link") {
+    const v = ((t as HTMLInputElement).value || "").trim();
+    it.link = v || undefined;
+    persistUpdate(id, { link: it.link ?? null }).catch(console.error);
+  }
+  render();
+});
+
+ulLista.addEventListener("change", (e) => {
+  const t = e.target as HTMLElement;
+  if ((t as HTMLInputElement).type !== "checkbox") return;
+  const li = (t.closest("li") as HTMLLIElement);
+  if (!li) return;
+  const id = li.dataset.id!;
+  const it = items.find(x => x.id === id);
+  if (!it) return;
+  it.feito = (t as HTMLInputElement).checked;
+  persistUpdate(id, { feito: it.feito }).catch(console.error);
+  render();
+});
+
+btnLimpar.addEventListener("click", () => {
+  const feitos = items.filter(i => i.feito).map(i => i.id);
+  if (!feitos.length) return;
+  if (!confirm(`Deletar ${feitos.length} realizados?`)) return;
+  items = items.filter(i => !i.feito);
+  render();
+  persistDeleteMany(feitos).catch(console.error);
+});
+
+btnDeletar.addEventListener("click", () => {
+  const ids = prompt("IDs (separe por vírgula) ou deixe vazio para cancelar:");
+  if (!ids) return;
+  const arr = ids.split(",").map(s=>s.trim()).filter(Boolean);
+  items = items.filter(i => !arr.includes(i.id));
+  render();
+  persistDeleteMany(arr).catch(console.error);
+});
+
+/* ---------- Format helpers ---------- */
+function parseMoney(s: string): number {
+  const t = (s || "").replace(/\./g, "").replace(",", ".").replace(/[^\d.]+/g, "");
+  const n = Number(t);
+  return isFinite(n) ? Number(n.toFixed(2)) : 0;
+}
+function formatMoney(n: number) {
+  return (isFinite(n) ? n : 0).toLocaleString("pt-BR",{minimumFractionDigits:2, maximumFractionDigits:2});
+}
+function clamp(n:number, min:number, max:number){ return Math.max(min, Math.min(max, n)); }
+
+/* ---------- Persistência (Firestore) ---------- */
+/*  Se você já tinha firebase.ts com getDb/getAuth, continue usando.
+    Aqui vai uma versão “inline” simples para não quebrar nada.
+*/
+import { initializeApp } from "firebase/app";
+import { getAuth, signInAnonymously } from "firebase/auth";
+import {
+  getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, serverTimestamp, updateDoc
+} from "firebase/firestore";
+
+const firebaseConfig = {
+  apiKey: import.meta.env.VITE_FB_API_KEY,
+  authDomain: import.meta.env.VITE_FB_AUTH_DOMAIN,
+  projectId: import.meta.env.VITE_FB_PROJECT_ID,
+  storageBucket: import.meta.env.VITE_FB_STORAGE_BUCKET,
+  messagingSenderId: import.meta.env.VITE_FB_MESSAGING_SENDER_ID,
+  appId: import.meta.env.VITE_FB_APP_ID,
+};
+
+console.log("[fb cfg]", { apiKey: firebaseConfig.apiKey ? "ok" : "(vazia)", projectId: firebaseConfig.projectId, ok: !!firebaseConfig.apiKey && !!firebaseConfig.projectId });
+
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+
+// room por querystring (?room=...)
+const url = new URL(location.href);
+const room = (url.searchParams.get("room") || "wullyann-pamela").trim();
+
+async function ensureAuth() {
+  await signInAnonymously(auth);
+}
+
+const colItems = collection(db, "rooms", room, "items");
+const docMeta = doc(db, "rooms", room, "meta", "config");
+
+/* carregar em tempo real */
+onSnapshot(colItems, snap => {
+  const arr: Item[] = [];
+  snap.forEach(d => {
+    const v = d.data() as any;
+    arr.push({
+      id: d.id,
+      item: v.item ?? "",
+      prio: Number(v.prio ?? 5),
+      grupo: normalizaGrupo(v.grupo ?? "Outros"),
+      valor: Number(v.valor ?? 0),
+      link: v.link || undefined,
+      feito: Boolean(v.feito),
+      createdAt: Number(v.createdAt ?? Date.now())
+    });
   });
-  btnPrioClear.addEventListener("click", () => { prioVal.value = ""; render(); });
+  items = arr;
+  render();
+});
+
+onSnapshot(docMeta, d => {
+  const v = d.data() as any;
+  if (v?.groups && Array.isArray(v.groups)) {
+    grupos = (v.groups as string[]).map(normalizaGrupo).sort(cmpGrupo);
+    renderGrupos();
+  }
+});
+
+/* salvar/adicionar/atualizar */
+async function persistAdd(it: Item) {
+  await setDoc(doc(colItems, it.id), {
+    item: it.item, prio: it.prio, grupo: it.grupo, valor: it.valor,
+    link: it.link ?? null, feito: it.feito, createdAt: serverTimestamp()
+  });
+}
+async function persistUpdate(id: string, patch: Partial<Item>) {
+  await updateDoc(doc(colItems, id), patch as any);
+}
+async function persistDeleteMany(ids: string[]) {
+  await Promise.all(ids.map(id => deleteDoc(doc(colItems, id))));
+}
+async function persistGrupos() {
+  await setDoc(docMeta, { groups: grupos }, { merge: true });
 }
 
-btnDelMode.addEventListener("click", () => { deleteMode = true; selectedToDelete.clear(); render(); });
-btnDelCancel.addEventListener("click", () => { deleteMode = false; selectedToDelete.clear(); render(); });
-btnDelConfirm.addEventListener("click", async () => {
-  if (selectedToDelete.size === 0) return;
-  if (!confirm(`Apagar ${selectedToDelete.size} item(ns)?`)) return;
-  try { await deleteItems(Array.from(selectedToDelete)); deleteMode = false; selectedToDelete.clear(); }
-  catch (e:any) { console.error(e); showError("Falha ao deletar."); }
-});
-
-btnLimpar.addEventListener("click", async () => {
-  const ids = lista.filter(i => i.feito).map(i => i.id);
-  if (ids.length === 0) return;
-  if (!confirm(`Apagar ${ids.length} realizado(s)?`)) return;
-  try { await deleteItems(ids); }
-  catch (e:any) { console.error(e); showError("Falha ao limpar realizados."); }
-});
-
-btnGrupo.addEventListener("click", async () => {
-  const nome = prompt("Nome do novo grupo (ex.: Cozinha, Quarto…):");
-  if (!nome) return; const n = nome.trim(); if (!n) return;
-  if (grupos.includes(n)) { alert("Esse grupo já existe."); return; }
+/* ---------- Inicialização ---------- */
+(async function start(){
   try {
-    const arr = [...grupos, n].sort((a,b)=>a.localeCompare(b));
-    await setDoc(docMeta, { groups: arr }, { merge: true });
-  } catch (e:any) { console.error(e); showError("Falha ao criar grupo."); }
-});
-
-// ---------- start ----------
-(async function start() {
-  try {
-    await ensureAnon();              // login anônimo
-    await createGroupsIfMissing();   // cria meta/grupos se não existir
-    subscribe();                     // listeners em tempo real
-  } catch (e:any) {
-    console.error(e);
-    showError("Falha na inicialização do Firebase. Verifique Auth anônima e .env.local.");
+    await ensureAuth();
+  } catch (e) {
+    console.error("Falha na inicialização do Firebase. Verifique Auth anônima e .env.local.", e);
   }
+  // inicial popula selects
+  renderGrupos();
+  render();
 })();

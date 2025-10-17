@@ -4,11 +4,12 @@ type Item = {
   item: string;
   prio: number;
   grupo: string;
-  valor: number;     // em reais
-  link?: string;
+  valor: number;
+  link?: string | null;   // ⬅️ aceita null também
   feito: boolean;
   createdAt: number;
 };
+
 
 // ---------- Estado ----------
 let items: Item[] = [];
@@ -202,9 +203,10 @@ ulLista.addEventListener("input", (e) => {
     const v = ((t as HTMLInputElement).value||"").trim();
     it.item=v; persistUpdate(id,{item:v}).catch(console.error);
   }else if(action==="edit-link"){
-    const v = ((t as HTMLInputElement).value||"").trim();
-    it.link = v || undefined; persistUpdate(id,{link: it.link ?? null}).catch(console.error);
-  }
+  const v = ((t as HTMLInputElement).value || "").trim();
+  it.link = v || null;                              // ⬅️ agora salvamos null quando vazio
+  persistUpdate(id, { link: it.link }).catch(console.error);
+}
   render();
 });
 
